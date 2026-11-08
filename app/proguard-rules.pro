@@ -1,0 +1,2 @@
+-keep class com.example.englishtutor.WordCard { *; }
+-dontwarn androidx.compose.**
