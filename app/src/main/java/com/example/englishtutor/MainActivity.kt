@@ -10,14 +10,14 @@ import androidx.compose.ui.Modifier
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        
+
         val repository = WordRepository(this)
         val wordList = repository.loadWords()
 
         setContent {
             Surface(
                 modifier = Modifier.fillMaxSize(),
-                color = DarkBg // שימוש ברקע הכהה שהגדרנו
+                color = DarkBg
             ) {
                 FlashcardScreen(words = wordList, repository = repository)
             }
