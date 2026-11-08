@@ -21,42 +21,33 @@ data class WordCard(
     var timesSeen: Int = 0,
     var lastSeenTimestamp: Long = 0L
 ) {
-    // נוסחת העדיפות של האלגוריתם החכם (ציון גבוה יותר = יוצג מוקדם יותר)
     fun calculatePriorityScore(now: Long): Double {
         var score = 100.0
-
-        // מילים שנלמדו יורדות לעדיפות נמוכה מאוד (אלא אם עבר הרבה זמן)
         if (isLearned) score -= 85.0
-
-        // מילים קשות מקבלות הקפצה משמעותית
         if (isHard) score += 65.0
-
-        // מילים חדשות שעדיין לא נראו מקבלות תעדוף
         if (timesSeen == 0) score += 35.0
-
-        // ככל שרצף ההצלחות (streak) גבוה יותר, המילה צריכה להופיע פחות
         score -= (streak * 12.0).coerceAtMost(60.0)
 
-        // אפקט השכחה: ככל שעבר יותר זמן מאז הפעם האחרונה, הציון עולה
         if (lastSeenTimestamp > 0L) {
             val minutesPassed = ((now - lastSeenTimestamp) / 60000.0).coerceAtMost(180.0)
             score += minutesPassed * 0.4
         }
 
-        // תוספת אקראיות קלה כדי שהסדר לא יהיה צפוי ומשעמם
         score += Random.nextDouble(-6.0, 6.0)
         return score
     }
 }
 
-class WordRepository(context: Context) {
+class WordRepository(private val context: Context) {
     private val prefs: SharedPreferences =
         context.getSharedPreferences("smart_words_prefs", Context.MODE_PRIVATE)
 
     fun loadWords(): List<WordCard> {
         val wordList = mutableListOf<WordCard>()
         try {
-            val jsonString = context.assets.open("words.json").bufferedReader().use { it.readText() }
+            val jsonString = context.assets.open("words.json").bufferedReader().use { reader ->
+                reader.readText()
+            }
             val jsonArray = JSONArray(jsonString)
 
             for (i in 0 until jsonArray.length()) {
@@ -93,7 +84,6 @@ class WordRepository(context: Context) {
         }
     }
 
-    // בניית תור הלמידה לפי הסינון והאלגוריתם
     fun sortSmartQueue(allWords: List<WordCard>, filter: StudyFilter): List<WordCard> {
         val now = System.currentTimeMillis()
         val filtered = when (filter) {
@@ -108,7 +98,6 @@ class WordRepository(context: Context) {
         return filtered.sortedByDescending { it.calculatePriorityScore(now) }
     }
 
-    // שליפת המילה הכי דחופה הבאה (שאינה המילה הנוכחית)
     fun pickNextSmartWord(
         allWords: List<WordCard>,
         filter: StudyFilter,
