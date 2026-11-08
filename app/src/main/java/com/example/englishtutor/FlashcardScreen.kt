@@ -1,5 +1,8 @@
 package com.example.englishtutor
 
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import androidx.compose.animation.*
@@ -15,7 +18,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -26,15 +30,18 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
@@ -47,7 +54,6 @@ import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.random.Random
 
-// פלטת צבעים ניאון / סייברפאנק כהה
 val DarkBg = Color(0xFF080B12)
 val CardDark = Color(0xFF14192B)
 val TealNeon = Color(0xFF00F0FF)
@@ -55,9 +61,7 @@ val TealDark = Color(0xFF004452)
 val StarGold = Color(0xFFFFC400)
 val CheckNeon = Color(0xFF00E676)
 val PurpleNeon = Color(0xFFB388FF)
-val CrimsonNeon = Color(0xFFFF5252)
 
-// מודל חלקיק עבור פיצוץ קונפטי
 data class ConfettiParticle(
     val angle: Float,
     val speed: Float,
@@ -69,12 +73,16 @@ data class ConfettiParticle(
 fun FlashcardScreen(words: List<WordCard>, repository: WordRepository) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val mainHandler = remember { Handler(Looper.getMainLooper()) }
 
-    var allWords by remember { mutableStateOf(words) }
+    val allWords by remember { mutableStateOf(words) }
     var selectedFilter by remember { mutableStateOf(StudyFilter.SMART) }
     var currentWord by remember {
         mutableStateOf(repository.pickNextSmartWord(allWords, selectedFilter, null))
     }
+
+    // שומר רפרנס עדכני תמיד למילה הנוכחית כדי למנוע הקראה או סימון של המילה הקודמת
+    val latestWord by rememberUpdatedState(currentWord)
 
     var isFlipped by remember { mutableStateOf(false) }
     var autoSpeak by remember { mutableStateOf(true) }
@@ -82,47 +90,69 @@ fun FlashcardScreen(words: List<WordCard>, repository: WordRepository) {
     var statsRefreshTrigger by remember { mutableIntStateOf(0) }
     var comboStreak by remember { mutableIntStateOf(0) }
 
-    // --- מנוע הקראה קולית באנגלית (TTS) ---
+    // --- מנוע הקראה קולית מסונכרן ומדויק (TextToSpeech) ---
     var ttsReady by remember { mutableStateOf(false) }
-    val tts = remember {
-        var instance: TextToSpeech? = null
-        instance = TextToSpeech(context) { status ->
+    val ttsRef = remember { mutableStateOf<TextToSpeech?>(null) }
+
+    DisposableEffect(context) {
+        var engine: TextToSpeech? = null
+        engine = TextToSpeech(context) { status ->
             if (status == TextToSpeech.SUCCESS) {
-                instance?.language = Locale.US
-                instance?.setSpeechRate(0.92f)
-                instance?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                    override fun onStart(utteranceId: String?) { isSpeaking = true }
-                    override fun onDone(utteranceId: String?) { isSpeaking = false }
-                    override fun onError(utteranceId: String?) { isSpeaking = false }
+                engine?.language = Locale.US
+                engine?.setSpeechRate(0.92f)
+                engine?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                    override fun onStart(utteranceId: String?) {
+                        mainHandler.post { isSpeaking = true }
+                    }
+                    override fun onDone(utteranceId: String?) {
+                        mainHandler.post { isSpeaking = false }
+                    }
+                    @Deprecated("Deprecated in Java")
+                    override fun onError(utteranceId: String?) {
+                        mainHandler.post { isSpeaking = false }
+                    }
+                    override fun onStop(utteranceId: String?, interrupted: Boolean) {
+                        mainHandler.post { isSpeaking = false }
+                    }
                 })
+                ttsRef.value = engine
                 ttsReady = true
             }
         }
-        instance
-    }
-
-    DisposableEffect(Unit) {
         onDispose {
-            tts.stop()
-            tts.shutdown()
+            engine?.stop()
+            engine?.shutdown()
+            ttsRef.value = null
         }
     }
 
-    fun speakWord(wordText: String) {
-        if (ttsReady) {
-            isSpeaking = true
-            tts.speak(wordText, TextToSpeech.QUEUE_FLUSH, null, "WORD_TTS_ID")
+    // פונקציית הקראה שקוראת תמיד את המילה המבוקשת ומנקה שאריות מהמילה הקודמת
+    fun speakWord(wordToSpeak: String?) {
+        val cleanWord = wordToSpeak?.trim() ?: return
+        val engine = ttsRef.value ?: return
+        if (ttsReady && cleanWord.isNotEmpty()) {
+            engine.stop() // עוצר מיד כל הקראה קודמת
+            val params = Bundle().apply {
+                putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
+            }
+            engine.speak(cleanWord, TextToSpeech.QUEUE_FLUSH, params, "TTS_${cleanWord}_${System.nanoTime()}")
         }
     }
 
-    LaunchedEffect(currentWord?.english, ttsReady) {
-        if (ttsReady && autoSpeak && currentWord != null) {
-            delay(200)
-            speakWord(currentWord!!.english)
+    // הקראה אוטומטית מסונכרנת למילה הנוכחית בלבד (מתבטלת אוטומטית אם עוברים מילה מהר)
+    LaunchedEffect(currentWord?.english, ttsReady, autoSpeak) {
+        val targetEnglish = currentWord?.english
+        if (ttsReady && autoSpeak && !targetEnglish.isNullOrBlank()) {
+            ttsRef.value?.stop()
+            isSpeaking = false
+            delay(180) // ממתין לסיום תחילת אנימציית המעבר לפני ההקראה
+            if (latestWord?.english == targetEnglish) {
+                speakWord(targetEnglish)
+            }
         }
     }
 
-    // --- מערך עשרות אנימציות (Physics, Particles, Shimmer, Orbs, Wave) ---
+    // --- מערך האנימציות ---
     val dragOffsetX = remember { Animatable(0f) }
     val dragOffsetY = remember { Animatable(0f) }
     val cardEnterScale = remember { Animatable(1f) }
@@ -147,7 +177,7 @@ fun FlashcardScreen(words: List<WordCard>, repository: WordRepository) {
             confettiProgress.snapTo(0f)
             confettiProgress.animateTo(
                 targetValue = 1f,
-                animationSpec = tween(900, easing = FastOutSlowInEasing)
+                animationSpec = tween(850, easing = FastOutSlowInEasing)
             )
             showConfetti = false
         }
@@ -156,14 +186,13 @@ fun FlashcardScreen(words: List<WordCard>, repository: WordRepository) {
     fun triggerHardShake() {
         scope.launch {
             for (i in 0..5) {
-                val target = if (i % 2 == 0) 18f else -18f
-                cardShakeX.animateTo(target, tween(45))
+                val target = if (i % 2 == 0) 16f else -16f
+                cardShakeX.animateTo(target, tween(40))
             }
             cardShakeX.animateTo(0f, spring())
         }
     }
 
-    // אנימציית היפוך תלת-ממדית אלסטית
     val flipRotation by animateFloatAsState(
         targetValue = if (isFlipped) 180f else 0f,
         animationSpec = spring(
@@ -173,34 +202,33 @@ fun FlashcardScreen(words: List<WordCard>, repository: WordRepository) {
         label = "flipRotation"
     )
 
-    // אנימציות אינסופיות ברקע ועל הכרטיס
     val infiniteTransition = rememberInfiniteTransition(label = "infiniteFX")
 
     val breathingScale by infiniteTransition.animateFloat(
-        initialValue = 0.985f,
-        targetValue = 1.015f,
+        initialValue = 0.99f,
+        targetValue = 1.012f,
         animationSpec = infiniteRepeatable(
-            animation = tween(2100, easing = FastOutSlowInEasing),
+            animation = tween(2200, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
         ),
         label = "breathingScale"
     )
 
     val floatingOffsetY by infiniteTransition.animateFloat(
-        initialValue = -7f,
-        targetValue = 7f,
+        initialValue = -6f,
+        targetValue = 6f,
         animationSpec = infiniteRepeatable(
-            animation = tween(2500, easing = EaseInOutSine),
+            animation = tween(2600, easing = EaseInOutSine),
             repeatMode = RepeatMode.Reverse
         ),
         label = "floatingY"
     )
 
     val cardTiltWobble by infiniteTransition.animateFloat(
-        initialValue = -1.2f,
-        targetValue = 1.2f,
+        initialValue = -0.8f,
+        targetValue = 0.8f,
         animationSpec = infiniteRepeatable(
-            animation = tween(3200, easing = EaseInOutSine),
+            animation = tween(3400, easing = EaseInOutSine),
             repeatMode = RepeatMode.Reverse
         ),
         label = "tiltWobble"
@@ -210,7 +238,7 @@ fun FlashcardScreen(words: List<WordCard>, repository: WordRepository) {
         initialValue = -400f,
         targetValue = 1200f,
         animationSpec = infiniteRepeatable(
-            animation = tween(3000, easing = LinearEasing),
+            animation = tween(3200, easing = LinearEasing),
             repeatMode = RepeatMode.Restart
         ),
         label = "shimmerSweep"
@@ -230,7 +258,7 @@ fun FlashcardScreen(words: List<WordCard>, repository: WordRepository) {
         initialValue = 0f,
         targetValue = 360f,
         animationSpec = infiniteRepeatable(
-            animation = tween(7000, easing = LinearEasing),
+            animation = tween(6500, easing = LinearEasing),
             repeatMode = RepeatMode.Restart
         ),
         label = "haloRotation"
@@ -238,15 +266,14 @@ fun FlashcardScreen(words: List<WordCard>, repository: WordRepository) {
 
     val speakerWaveScale by infiniteTransition.animateFloat(
         initialValue = 1f,
-        targetValue = if (isSpeaking) 1.45f else 1.06f,
+        targetValue = if (isSpeaking) 1.4f else 1.05f,
         animationSpec = infiniteRepeatable(
-            animation = tween(480, easing = FastOutSlowInEasing),
+            animation = tween(460, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
         ),
         label = "speakerWave"
     )
 
-    // 5 עמודות אקוולייזר לזמן הקראה קולית
     val eqBar1 by infiniteTransition.animateFloat(0.25f, 1f, infiniteRepeatable(tween(240), RepeatMode.Reverse), "eq1")
     val eqBar2 by infiniteTransition.animateFloat(0.35f, 0.95f, infiniteRepeatable(tween(180), RepeatMode.Reverse), "eq2")
     val eqBar3 by infiniteTransition.animateFloat(0.2f, 1f, infiniteRepeatable(tween(300), RepeatMode.Reverse), "eq3")
@@ -266,35 +293,23 @@ fun FlashcardScreen(words: List<WordCard>, repository: WordRepository) {
         label = "borderColor"
     )
 
-    // אפקט מכונת כתיבה לתרגום בעברית כשהכרטיס מתהפך
-    var revealedHebrewChars by remember { mutableIntStateOf(0) }
-    LaunchedEffect(isFlipped, currentWord?.hebrew) {
-        val heb = currentWord?.hebrew ?: ""
-        if (isFlipped) {
-            revealedHebrewChars = 0
-            for (i in 1..heb.length) {
-                delay(28)
-                revealedHebrewChars = i
-            }
-        } else {
-            revealedHebrewChars = 0
-        }
-    }
-
     fun advanceToNextWord(exitDirection: Float = 0f) {
         scope.launch {
-            isFlipped = false // מאפס היפוך מיד כדי לא לחשוף את המילה הבאה
+            ttsRef.value?.stop() // עוצר מיד הקראה קודמת
+            isSpeaking = false
+            isFlipped = false // מאפס היפוך מיד כדי לא לחשוף את התרגום הבא
+
             if (exitDirection != 0f) {
-                dragOffsetX.animateTo(exitDirection * 950f, tween(210))
+                dragOffsetX.animateTo(exitDirection * 950f, tween(200))
             }
-            cardEnterScale.snapTo(0.78f)
+            cardEnterScale.snapTo(0.8f)
             dragOffsetX.snapTo(0f)
             dragOffsetY.snapTo(0f)
 
             currentWord = repository.pickNextSmartWord(
                 allWords = allWords,
                 filter = selectedFilter,
-                currentEnglish = currentWord?.english
+                currentEnglish = latestWord?.english
             )
             statsRefreshTrigger++
 
@@ -309,7 +324,7 @@ fun FlashcardScreen(words: List<WordCard>, repository: WordRepository) {
     }
 
     fun markCurrentWord(learned: Boolean? = null, hard: Boolean? = null) {
-        val word = currentWord ?: return
+        val word = latestWord ?: return
         word.timesSeen++
         word.lastSeenTimestamp = System.currentTimeMillis()
 
@@ -347,548 +362,576 @@ fun FlashcardScreen(words: List<WordCard>, repository: WordRepository) {
         label = "progressAnim"
     )
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(
-                Brush.verticalGradient(
-                    colors = listOf(DarkBg, Color(0xFF10172A), DarkBg)
-                )
-            )
-    ) {
-        // --- שכבה 1: כדורי אנרגיה מרחפים ברקע (Floating Ambient Orbs) ---
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val w = size.width
-            val h = size.height
-
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(TealNeon.copy(alpha = 0.12f), Color.Transparent),
-                    radius = 380f
-                ),
-                radius = 380f,
-                center = Offset(
-                    x = w * 0.2f + cos(orbPhase) * 90f,
-                    y = h * 0.3f + sin(orbPhase) * 70f
-                )
-            )
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(PurpleNeon.copy(alpha = 0.11f), Color.Transparent),
-                    radius = 340f
-                ),
-                radius = 340f,
-                center = Offset(
-                    x = w * 0.8f + sin(orbPhase * 0.8f) * 80f,
-                    y = h * 0.65f + cos(orbPhase * 0.8f) * 90f
-                )
-            )
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(CheckNeon.copy(alpha = 0.08f), Color.Transparent),
-                    radius = 280f
-                ),
-                radius = 280f,
-                center = Offset(
-                    x = w * 0.5f + cos(orbPhase * 1.2f) * 110f,
-                    y = h * 0.18f + sin(orbPhase * 1.2f) * 50f
-                )
-            )
-        }
-
-        // --- שכבה 2: תוכן המסך ---
-        Column(
+    // קובע כיוון RTL אחיד למסך בעברית, בעוד שהמילה באנגלית תוצג ב-LTR תקין
+    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
+        Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 20.dp, vertical = 14.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.SpaceBetween
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(DarkBg, Color(0xFF10172A), DarkBg)
+                    )
+                )
         ) {
-            // --- חלק עליון: כותרת, טבעת התקדמות, מתג הקראה וסינון ---
-            Column(modifier = Modifier.fillMaxWidth().padding(top = 10.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    // מתג הקראה אוטומטית מונפש
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(20.dp))
-                            .background(CardDark)
-                            .border(
-                                1.5.dp,
-                                if (autoSpeak) TealNeon else Color.Gray.copy(0.3f),
-                                RoundedCornerShape(20.dp)
-                            )
-                            .clickable { autoSpeak = !autoSpeak }
-                            .padding(horizontal = 12.dp, vertical = 6.dp)
-                    ) {
-                        Icon(
-                            imageVector = if (autoSpeak) Icons.Default.VolumeUp else Icons.Default.VolumeOff,
-                            contentDescription = "הקראה אוטומטית",
-                            tint = if (autoSpeak) TealNeon else Color.Gray,
-                            modifier = Modifier.size(18.dp).scale(if (isSpeaking) speakerWaveScale else 1f)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = if (autoSpeak) "הקראה אוטומטית" else "הקראה ידנית",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = if (autoSpeak) TealNeon else Color.Gray
-                        )
-                    }
+            // --- שכבה 1: כדורי אור מרחפים ברקע ---
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val w = size.width
+                val h = size.height
 
-                    // תגית רצף הצלחות (Combo Streak) + טבעת אחוזים
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        AnimatedVisibility(
-                            visible = comboStreak >= 2,
-                            enter = scaleIn(spring(Spring.DampingRatioHighBouncy)) + fadeIn(),
-                            exit = scaleOut() + fadeOut()
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(TealNeon.copy(alpha = 0.12f), Color.Transparent),
+                        radius = 380f
+                    ),
+                    radius = 380f,
+                    center = Offset(
+                        x = w * 0.2f + cos(orbPhase) * 90f,
+                        y = h * 0.3f + sin(orbPhase) * 70f
+                    )
+                )
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(PurpleNeon.copy(alpha = 0.11f), Color.Transparent),
+                        radius = 340f
+                    ),
+                    radius = 340f,
+                    center = Offset(
+                        x = w * 0.8f + sin(orbPhase * 0.8f) * 80f,
+                        y = h * 0.65f + cos(orbPhase * 0.8f) * 90f
+                    )
+                )
+            }
+
+            // --- שכבה 2: תוכן המסך ---
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 20.dp, vertical = 14.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.SpaceBetween
+            ) {
+                // --- חלק עליון ---
+                Column(modifier = Modifier.fillMaxWidth().padding(top = 10.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // מתג הקראה אוטומטית
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(20.dp))
+                                .background(CardDark)
+                                .border(
+                                    1.5.dp,
+                                    if (autoSpeak) TealNeon else Color.Gray.copy(0.3f),
+                                    RoundedCornerShape(20.dp)
+                                )
+                                .clickable { autoSpeak = !autoSpeak }
+                                .padding(horizontal = 12.dp, vertical = 6.dp)
                         ) {
-                            Text(
-                                text = "🔥 x$comboStreak",
-                                fontSize = 15.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                color = StarGold,
+                            SpeakerVectorIcon(
+                                tint = if (autoSpeak) TealNeon else Color.Gray,
+                                isMuted = !autoSpeak,
                                 modifier = Modifier
-                                    .padding(end = 10.dp)
-                                    .scale(breathingScale)
+                                    .size(18.dp)
+                                    .scale(if (isSpeaking) speakerWaveScale else 1f)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = if (autoSpeak) "הקראה אוטומטית" else "הקראה ידנית",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (autoSpeak) TealNeon else Color.Gray
                             )
                         }
 
-                        // טבעת התקדמות היקפית מונפשת
-                        Box(contentAlignment = Alignment.Center, modifier = Modifier.size(42.dp)) {
-                            Canvas(modifier = Modifier.size(38.dp)) {
-                                drawArc(
-                                    color = CardDark,
-                                    startAngle = 0f,
-                                    sweepAngle = 360f,
-                                    useCenter = false,
-                                    style = Stroke(width = 4.dp.toPx(), cap = StrokeCap.Round)
-                                )
-                                drawArc(
-                                    color = CheckNeon,
-                                    startAngle = -90f,
-                                    sweepAngle = progressFraction * 360f,
-                                    useCenter = false,
-                                    style = Stroke(width = 4.dp.toPx(), cap = StrokeCap.Round)
+                        // רצף הצלחות וטבעת התקדמות
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            AnimatedVisibility(
+                                visible = comboStreak >= 2,
+                                enter = scaleIn(spring(Spring.DampingRatioHighBouncy)) + fadeIn(),
+                                exit = scaleOut() + fadeOut()
+                            ) {
+                                Text(
+                                    text = "🔥 x$comboStreak",
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = StarGold,
+                                    modifier = Modifier
+                                        .padding(end = 10.dp)
+                                        .scale(breathingScale)
                                 )
                             }
+
+                            Box(contentAlignment = Alignment.Center, modifier = Modifier.size(42.dp)) {
+                                Canvas(modifier = Modifier.size(38.dp)) {
+                                    drawArc(
+                                        color = CardDark,
+                                        startAngle = 0f,
+                                        sweepAngle = 360f,
+                                        useCenter = false,
+                                        style = Stroke(width = 4.dp.toPx(), cap = StrokeCap.Round)
+                                    )
+                                    drawArc(
+                                        color = CheckNeon,
+                                        startAngle = -90f,
+                                        sweepAngle = progressFraction * 360f,
+                                        useCenter = false,
+                                        style = Stroke(width = 4.dp.toPx(), cap = StrokeCap.Round)
+                                    )
+                                }
+                                Text(
+                                    text = "${(progressFraction * 100).roundToInt()}%",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // תגיות סטטיסטיקה
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        AnimatedCounterBadge("נלמדו", learnedCount, CheckNeon)
+                        AnimatedCounterBadge("לא נלמדו", unlearnedCount, TealNeon)
+                        AnimatedCounterBadge("קשות", hardCount, StarGold)
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    // סרגל סינון חכם
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        StudyFilter.entries.forEach { filter ->
+                            val isSelected = selectedFilter == filter
+                            val chipScale by animateFloatAsState(
+                                targetValue = if (isSelected) 1.05f else 0.96f,
+                                animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
+                                label = "chipScale"
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .scale(chipScale)
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(if (isSelected) TealDark else CardDark)
+                                    .border(
+                                        width = if (isSelected) 1.5.dp else 1.dp,
+                                        color = if (isSelected) TealNeon else Color.Gray.copy(0.25f),
+                                        shape = RoundedCornerShape(14.dp)
+                                    )
+                                    .clickable {
+                                        ttsRef.value?.stop()
+                                        selectedFilter = filter
+                                        isFlipped = false
+                                        currentWord = repository.pickNextSmartWord(allWords, filter, null)
+                                    }
+                                    .padding(vertical = 8.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = filter.label,
+                                    fontSize = 12.sp,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                    color = if (isSelected) TealNeon else Color.LightGray
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // --- חלק מרכזי: הכרטיסייה התלת-ממדית ---
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .padding(vertical = 12.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (currentWord == null) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            TrophyVectorIcon(
+                                tint = StarGold,
+                                modifier = Modifier.size(76.dp).scale(breathingScale)
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
                             Text(
-                                text = "${(progressFraction * 100).roundToInt()}%",
-                                fontSize = 10.sp,
+                                text = "סיימת את כל המילים בקטגוריה זו!",
+                                fontSize = 20.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White,
+                                textAlign = TextAlign.Center
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Button(
+                                onClick = {
+                                    selectedFilter = StudyFilter.ALL
+                                    currentWord = repository.pickNextSmartWord(allWords, StudyFilter.ALL, null)
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = TealDark)
+                            ) {
+                                Text("חזור לכל המילים", color = TealNeon)
+                            }
+                        }
+                    } else {
+                        val word = currentWord!!
+
+                        // הגדרת הכרטיס ב-LTR כדי שצירי הגרירה וסיבוב התלת-ממד יתנהגו טבעי
+                        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth(0.93f)
+                                    .height(345.dp)
+                                    .offset {
+                                        IntOffset(
+                                            x = (dragOffsetX.value + cardShakeX.value).roundToInt(),
+                                            y = (dragOffsetY.value + floatingOffsetY).roundToInt()
+                                        )
+                                    }
+                                    .scale(cardEnterScale.value * breathingScale)
+                                    .graphicsLayer {
+                                        rotationY = flipRotation
+                                        rotationZ = (dragOffsetX.value / 25f).coerceIn(-18f, 18f) + cardTiltWobble
+                                        rotationX = (-dragOffsetY.value / 35f).coerceIn(-10f, 10f)
+                                        cameraDistance = 16f * density
+                                    }
+                                    .pointerInput(Unit) {
+                                        detectDragGestures(
+                                            onDragEnd = {
+                                                when {
+                                                    dragOffsetX.value > 190f -> {
+                                                        markCurrentWord(learned = true)
+                                                        advanceToNextWord(exitDirection = 1f)
+                                                    }
+                                                    dragOffsetX.value < -190f -> {
+                                                        markCurrentWord(hard = true)
+                                                        advanceToNextWord(exitDirection = -1f)
+                                                    }
+                                                    else -> {
+                                                        scope.launch {
+                                                            dragOffsetX.animateTo(0f, spring(Spring.DampingRatioMediumBouncy))
+                                                            dragOffsetY.animateTo(0f, spring(Spring.DampingRatioMediumBouncy))
+                                                        }
+                                                    }
+                                                }
+                                            },
+                                            onDrag = { change, dragAmount ->
+                                                change.consume()
+                                                scope.launch {
+                                                    dragOffsetX.snapTo(dragOffsetX.value + dragAmount.x)
+                                                    dragOffsetY.snapTo(dragOffsetY.value + dragAmount.y * 0.35f)
+                                                }
+                                            }
+                                        )
+                                    }
+                                    .clickable { isFlipped = !isFlipped }
+                                    .border(2.5.dp, dynamicBorderColor, RoundedCornerShape(28.dp)),
+                                shape = RoundedCornerShape(28.dp),
+                                colors = CardDefaults.cardColors(containerColor = CardDark),
+                                elevation = CardDefaults.cardElevation(defaultElevation = 22.dp)
+                            ) {
+                                Box(modifier = Modifier.fillMaxSize()) {
+                                    // קרן לייזר הולוגרפית עדינה ברקע הכרטיס
+                                    Canvas(modifier = Modifier.fillMaxSize()) {
+                                        drawLine(
+                                            brush = Brush.linearGradient(
+                                                colors = listOf(
+                                                    Color.Transparent,
+                                                    dynamicBorderColor.copy(alpha = 0.14f),
+                                                    Color.Transparent
+                                                ),
+                                                start = Offset(shimmerSweep - 200f, 0f),
+                                                end = Offset(shimmerSweep + 200f, size.height)
+                                            ),
+                                            start = Offset(shimmerSweep - 150f, 0f),
+                                            end = Offset(shimmerSweep + 150f, size.height),
+                                            strokeWidth = 85f
+                                        )
+                                    }
+
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .padding(22.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        if (flipRotation <= 90f) {
+                                            // --- צד קדמי: המילה באנגלית (יציבה, חדה ובכיוון LTR תקין!) ---
+                                            Column(
+                                                modifier = Modifier.fillMaxSize(),
+                                                horizontalAlignment = Alignment.CenterHorizontally,
+                                                verticalArrangement = Arrangement.SpaceBetween
+                                            ) {
+                                                // שורה עליונה בכרטיס
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    // כפתור השמע + אקוולייזר
+                                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                                        Box(contentAlignment = Alignment.Center) {
+                                                            Box(
+                                                                modifier = Modifier
+                                                                    .size(50.dp)
+                                                                    .rotate(haloRotation)
+                                                                    .scale(if (isSpeaking) speakerWaveScale else 1f)
+                                                                    .clip(CircleShape)
+                                                                    .border(
+                                                                        width = 1.5.dp,
+                                                                        brush = Brush.sweepGradient(
+                                                                            listOf(TealNeon, Color.Transparent, PurpleNeon, Color.Transparent)
+                                                                        ),
+                                                                        shape = CircleShape
+                                                                    )
+                                                            )
+                                                            IconButton(
+                                                                onClick = { speakWord(latestWord?.english) },
+                                                                modifier = Modifier
+                                                                    .size(42.dp)
+                                                                    .clip(CircleShape)
+                                                                    .background(TealDark)
+                                                            ) {
+                                                                SpeakerVectorIcon(
+                                                                    tint = TealNeon,
+                                                                    isMuted = false,
+                                                                    modifier = Modifier.size(22.dp)
+                                                                )
+                                                            }
+                                                        }
+
+                                                        AnimatedVisibility(visible = isSpeaking) {
+                                                            Row(
+                                                                modifier = Modifier
+                                                                    .padding(start = 8.dp)
+                                                                    .height(22.dp),
+                                                                verticalAlignment = Alignment.CenterVertically,
+                                                                horizontalArrangement = Arrangement.spacedBy(3.dp)
+                                                            ) {
+                                                                listOf(eqBar1, eqBar2, eqBar3, eqBar4, eqBar5).forEach { barHeight ->
+                                                                    Box(
+                                                                        modifier = Modifier
+                                                                            .width(3.dp)
+                                                                            .fillMaxHeight(barHeight)
+                                                                            .clip(RoundedCornerShape(2.dp))
+                                                                            .background(TealNeon)
+                                                                    )
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+
+                                                    Text(
+                                                        text = when {
+                                                            word.isHard -> "⚡ מילה מאתגרת"
+                                                            word.isLearned -> "✓ נלמדה (רצף ${word.streak})"
+                                                            word.timesSeen == 0 -> "✨ מילה חדשה"
+                                                            else -> "בתהליך למידה (${word.timesSeen})"
+                                                        },
+                                                        fontSize = 13.sp,
+                                                        color = dynamicBorderColor,
+                                                        fontWeight = FontWeight.SemiBold
+                                                    )
+                                                }
+
+                                                // המילה באנגלית - יציבה, ללא גל מסיח דעת, ובכיוון LTR מדויק
+                                                AnimatedContent(
+                                                    targetState = word.english,
+                                                    transitionSpec = {
+                                                        (fadeIn(tween(220)) + scaleIn(initialScale = 0.88f))
+                                                            .togetherWith(fadeOut(tween(140)) + scaleOut(targetScale = 1.08f))
+                                                    },
+                                                    label = "cleanEnglishWord"
+                                                ) { targetEnglish ->
+                                                    Text(
+                                                        text = targetEnglish,
+                                                        fontSize = 42.sp,
+                                                        fontWeight = FontWeight.ExtraBold,
+                                                        color = TealNeon,
+                                                        textAlign = TextAlign.Center,
+                                                        modifier = Modifier.fillMaxWidth()
+                                                    )
+                                                }
+
+                                                // חותמת החלקה או הוראות
+                                                val swipeStamp = when {
+                                                    dragOffsetX.value > 90f -> "✓ סמן כנלמד"
+                                                    dragOffsetX.value < -90f -> "★ סמן כקשה"
+                                                    else -> "לחץ להיפוך • החלק ימינה (נלמד) או שמאלה (קשה)"
+                                                }
+                                                Text(
+                                                    text = swipeStamp,
+                                                    fontSize = if (abs(dragOffsetX.value) > 90f) 16.sp else 12.sp,
+                                                    fontWeight = if (abs(dragOffsetX.value) > 90f) FontWeight.ExtraBold else FontWeight.Normal,
+                                                    color = if (abs(dragOffsetX.value) > 90f) dynamicBorderColor else Color.Gray,
+                                                    textAlign = TextAlign.Center
+                                                )
+                                            }
+                                        } else {
+                                            // --- צד אחורי: הפירוש בעברית ---
+                                            Column(
+                                                modifier = Modifier
+                                                    .fillMaxSize()
+                                                    .graphicsLayer { rotationY = 180f },
+                                                horizontalAlignment = Alignment.CenterHorizontally,
+                                                verticalArrangement = Arrangement.Center
+                                            ) {
+                                                CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
+                                                    Text(
+                                                        text = word.hebrew,
+                                                        fontSize = 38.sp,
+                                                        fontWeight = FontWeight.ExtraBold,
+                                                        color = Color.White,
+                                                        textAlign = TextAlign.Center
+                                                    )
+                                                }
+                                                Spacer(modifier = Modifier.height(14.dp))
+                                                Text(
+                                                    text = word.english,
+                                                    fontSize = 20.sp,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = PurpleNeon
+                                                )
+                                                Spacer(modifier = Modifier.height(18.dp))
+                                                OutlinedButton(
+                                                    onClick = { speakWord(latestWord?.english) },
+                                                    border = androidx.compose.foundation.BorderStroke(1.dp, TealNeon)
+                                                ) {
+                                                    SpeakerVectorIcon(
+                                                        tint = TealNeon,
+                                                        isMuted = false,
+                                                        modifier = Modifier.size(18.dp)
+                                                    )
+                                                    Spacer(modifier = Modifier.width(8.dp))
+                                                    Text("השמע הגייה באנגלית", color = TealNeon)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // --- שכבת פיצוץ קונפטי ---
+                        if (showConfetti) {
+                            Canvas(modifier = Modifier.fillMaxSize()) {
+                                val center = Offset(size.width / 2f, size.height / 2f)
+                                val p = confettiProgress.value
+                                confettiParticles.forEach { particle ->
+                                    val distance = particle.speed * p
+                                    val gravityY = 260f * p * p
+                                    val x = center.x + cos(particle.angle) * distance
+                                    val y = center.y + sin(particle.angle) * distance + gravityY
+                                    drawCircle(
+                                        color = particle.color.copy(alpha = (1f - p).coerceIn(0f, 1f)),
+                                        radius = particle.radius * (1f - p * 0.4f),
+                                        center = Offset(x, y)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // --- חלק תחתון: כפתורי פעולה ---
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        BouncyActionIcon(
+                            label = "נלמד",
+                            activeColor = CheckNeon,
+                            isActive = currentWord?.isLearned == true,
+                            onClick = {
+                                val newState = !(latestWord?.isLearned ?: false)
+                                markCurrentWord(learned = newState)
+                                if (newState) advanceToNextWord(exitDirection = 1f)
+                            }
+                        ) { tint ->
+                            Icon(
+                                imageVector = Icons.Default.Check,
+                                contentDescription = "נלמד",
+                                tint = tint,
+                                modifier = Modifier.size(26.dp)
+                            )
+                        }
+
+                        BouncyActionIcon(
+                            label = "הקרא שוב",
+                            activeColor = TealNeon,
+                            isActive = isSpeaking,
+                            onClick = { speakWord(latestWord?.english) }
+                        ) { tint ->
+                            SpeakerVectorIcon(
+                                tint = tint,
+                                isMuted = false,
+                                modifier = Modifier.size(26.dp)
+                            )
+                        }
+
+                        BouncyActionIcon(
+                            label = "קשה",
+                            activeColor = StarGold,
+                            isActive = currentWord?.isHard == true,
+                            onClick = {
+                                val newState = !(latestWord?.isHard ?: false)
+                                markCurrentWord(hard = newState)
+                            }
+                        ) { tint ->
+                            Icon(
+                                imageVector = Icons.Default.Star,
+                                contentDescription = "קשה",
+                                tint = tint,
+                                modifier = Modifier.size(26.dp)
+                            )
+                        }
+                    }
+
+                    Button(
+                        onClick = {
+                            markCurrentWord()
+                            advanceToNextWord(exitDirection = 0f)
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth(0.86f)
+                            .height(58.dp)
+                            .scale(breathingScale)
+                            .clip(RoundedCornerShape(30.dp))
+                            .border(2.dp, TealNeon, RoundedCornerShape(30.dp)),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent),
+                        contentPadding = PaddingValues()
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(
+                                    Brush.horizontalGradient(
+                                        colors = listOf(TealDark, CardDark, TealDark)
+                                    )
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "המילה הבאה בתור החכם",
+                                fontSize = 19.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = Color.White
                             )
                         }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // שורת סטטיסטיקות חיה
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    AnimatedCounterBadge("נלמדו", learnedCount, CheckNeon)
-                    AnimatedCounterBadge("לא נלמדו", unlearnedCount, TealNeon)
-                    AnimatedCounterBadge("קשות", hardCount, StarGold)
-                }
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                // סרגל סינון חכם עם אנימציית קפיץ
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    StudyFilter.entries.forEach { filter ->
-                        val isSelected = selectedFilter == filter
-                        val chipScale by animateFloatAsState(
-                            targetValue = if (isSelected) 1.06f else 0.95f,
-                            animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
-                            label = "chipScale"
-                        )
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .scale(chipScale)
-                                .clip(RoundedCornerShape(14.dp))
-                                .background(if (isSelected) TealDark else CardDark)
-                                .border(
-                                    width = if (isSelected) 1.5.dp else 1.dp,
-                                    color = if (isSelected) TealNeon else Color.Gray.copy(0.25f),
-                                    shape = RoundedCornerShape(14.dp)
-                                )
-                                .clickable {
-                                    selectedFilter = filter
-                                    isFlipped = false
-                                    currentWord = repository.pickNextSmartWord(allWords, filter, null)
-                                }
-                                .padding(vertical = 8.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = filter.label,
-                                fontSize = 12.sp,
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                color = if (isSelected) TealNeon else Color.LightGray
-                            )
-                        }
-                    }
-                }
-            }
-
-            // --- חלק מרכזי: הכרטיסייה התלת-ממדית עם קרן לייזר, גלי אותיות ואקוולייזר ---
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-                    .padding(vertical = 12.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                if (currentWord == null) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(
-                            imageVector = Icons.Default.EmojiEvents,
-                            contentDescription = null,
-                            tint = StarGold,
-                            modifier = Modifier.size(76.dp).scale(breathingScale)
-                        )
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Text(
-                            text = "סיימת את כל המילים בקטגוריה זו!",
-                            fontSize = 20.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White,
-                            textAlign = TextAlign.Center
-                        )
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Button(
-                            onClick = {
-                                selectedFilter = StudyFilter.ALL
-                                currentWord = repository.pickNextSmartWord(allWords, StudyFilter.ALL, null)
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = TealDark)
-                        ) {
-                            Text("חזור לכל המילים", color = TealNeon)
-                        }
-                    }
-                } else {
-                    val word = currentWord!!
-
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth(0.93f)
-                            .height(345.dp)
-                            .offset {
-                                IntOffset(
-                                    x = (dragOffsetX.value + cardShakeX.value).roundToInt(),
-                                    y = (dragOffsetY.value + floatingOffsetY).roundToInt()
-                                )
-                            }
-                            .scale(cardEnterScale.value * breathingScale)
-                            .graphicsLayer {
-                                rotationY = flipRotation
-                                rotationZ = (dragOffsetX.value / 25f).coerceIn(-20f, 20f) + cardTiltWobble
-                                rotationX = (-dragOffsetY.value / 35f).coerceIn(-12f, 12f)
-                                cameraDistance = 16f * density
-                            }
-                            .pointerInput(word.english) {
-                                detectDragGestures(
-                                    onDragEnd = {
-                                        when {
-                                            dragOffsetX.value > 200f -> {
-                                                markCurrentWord(learned = true)
-                                                advanceToNextWord(exitDirection = 1f)
-                                            }
-                                            dragOffsetX.value < -200f -> {
-                                                markCurrentWord(hard = true)
-                                                advanceToNextWord(exitDirection = -1f)
-                                            }
-                                            else -> {
-                                                scope.launch {
-                                                    dragOffsetX.animateTo(0f, spring(Spring.DampingRatioMediumBouncy))
-                                                    dragOffsetY.animateTo(0f, spring(Spring.DampingRatioMediumBouncy))
-                                                }
-                                            }
-                                        }
-                                    },
-                                    onDrag = { change, dragAmount ->
-                                        change.consume()
-                                        scope.launch {
-                                            dragOffsetX.snapTo(dragOffsetX.value + dragAmount.x)
-                                            dragOffsetY.snapTo(dragOffsetY.value + dragAmount.y * 0.35f)
-                                        }
-                                    }
-                                )
-                            }
-                            .clickable { isFlipped = !isFlipped }
-                            .border(2.5.dp, dynamicBorderColor, RoundedCornerShape(28.dp)),
-                        shape = RoundedCornerShape(28.dp),
-                        colors = CardDefaults.cardColors(containerColor = CardDark),
-                        elevation = CardDefaults.cardElevation(defaultElevation = 22.dp)
-                    ) {
-                        Box(modifier = Modifier.fillMaxSize()) {
-                            // קרן סריקה הולוגרפית שחוצה את הכרטיס
-                            Canvas(modifier = Modifier.fillMaxSize()) {
-                                drawLine(
-                                    brush = Brush.linearGradient(
-                                        colors = listOf(
-                                            Color.Transparent,
-                                            dynamicBorderColor.copy(alpha = 0.16f),
-                                            Color.Transparent
-                                        ),
-                                        start = Offset(shimmerSweep - 200f, 0f),
-                                        end = Offset(shimmerSweep + 200f, size.height)
-                                    ),
-                                    start = Offset(shimmerSweep - 150f, 0f),
-                                    end = Offset(shimmerSweep + 150f, size.height),
-                                    strokeWidth = 90f
-                                )
-                            }
-
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .padding(22.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                if (flipRotation <= 90f) {
-                                    // --- צד קדמי: המילה באנגלית ---
-                                    Column(
-                                        modifier = Modifier.fillMaxSize(),
-                                        horizontalAlignment = Alignment.CenterHorizontally,
-                                        verticalArrangement = Arrangement.SpaceBetween
-                                    ) {
-                                        // שורה עליונה בכרטיס: תגית מצב + כפתור רמקול עם הילה מסתובבת
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Text(
-                                                text = when {
-                                                    word.isHard -> "⚡ מילה מאתגרת"
-                                                    word.isLearned -> "✓ נלמדה (רצף ${word.streak})"
-                                                    word.timesSeen == 0 -> "✨ מילה חדשה"
-                                                    else -> "בתהליך למידה (${word.timesSeen})"
-                                                },
-                                                fontSize = 13.sp,
-                                                color = dynamicBorderColor,
-                                                fontWeight = FontWeight.SemiBold
-                                            )
-
-                                            // כפתור שמע עם גלי קול ואקוולייזר חי
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                AnimatedVisibility(visible = isSpeaking) {
-                                                    Row(
-                                                        modifier = Modifier
-                                                            .padding(end = 8.dp)
-                                                            .height(22.dp),
-                                                        verticalAlignment = Alignment.CenterVertically,
-                                                        horizontalArrangement = Arrangement.spacedBy(3.dp)
-                                                    ) {
-                                                        listOf(eqBar1, eqBar2, eqBar3, eqBar4, eqBar5).forEach { barHeight ->
-                                                            Box(
-                                                                modifier = Modifier
-                                                                    .width(3.dp)
-                                                                    .fillMaxHeight(barHeight)
-                                                                    .clip(RoundedCornerShape(2.dp))
-                                                                    .background(TealNeon)
-                                                            )
-                                                        }
-                                                    }
-                                                }
-
-                                                Box(contentAlignment = Alignment.Center) {
-                                                    // הילה מסתובבת סביב כפתור השמע
-                                                    Box(
-                                                        modifier = Modifier
-                                                            .size(50.dp)
-                                                            .rotate(haloRotation)
-                                                            .scale(if (isSpeaking) speakerWaveScale else 1f)
-                                                            .clip(CircleShape)
-                                                            .border(
-                                                                width = 1.5.dp,
-                                                                brush = Brush.sweepGradient(
-                                                                    listOf(TealNeon, Color.Transparent, PurpleNeon, Color.Transparent)
-                                                                ),
-                                                                shape = CircleShape
-                                                            )
-                                                    )
-                                                    IconButton(
-                                                        onClick = { speakWord(word.english) },
-                                                        modifier = Modifier
-                                                            .size(42.dp)
-                                                            .clip(CircleShape)
-                                                            .background(TealDark)
-                                                    ) {
-                                                        Icon(
-                                                            imageVector = Icons.Default.VolumeUp,
-                                                            contentDescription = "הקרא באנגלית",
-                                                            tint = TealNeon
-                                                        )
-                                                    }
-                                                }
-                                            }
-                                        }
-
-                                        // אנימציית גל אות-אחר-אות למילה באנגלית
-                                        AnimatedWaveWord(
-                                            word = word.english,
-                                            phase = orbPhase * 2f,
-                                            color = TealNeon
-                                        )
-
-                                        // חותמת החלקה חיה או הוראות
-                                        val swipeStamp = when {
-                                            dragOffsetX.value > 90f -> "✓ סמן כנלמד"
-                                            dragOffsetX.value < -90f -> "★ סמן כקשה"
-                                            else -> "לחץ להיפוך • החלק ימינה (נלמד) או שמאלה (קשה)"
-                                        }
-                                        Text(
-                                            text = swipeStamp,
-                                            fontSize = if (abs(dragOffsetX.value) > 90f) 16.sp else 12.sp,
-                                            fontWeight = if (abs(dragOffsetX.value) > 90f) FontWeight.ExtraBold else FontWeight.Normal,
-                                            color = if (abs(dragOffsetX.value) > 90f) dynamicBorderColor else Color.Gray,
-                                            textAlign = TextAlign.Center
-                                        )
-                                    }
-                                } else {
-                                    // --- צד אחורי: הפירוש בעברית עם אפקט מכונת כתיבה ---
-                                    Column(
-                                        modifier = Modifier
-                                            .fillMaxSize()
-                                            .graphicsLayer { rotationY = 180f },
-                                        horizontalAlignment = Alignment.CenterHorizontally,
-                                        verticalArrangement = Arrangement.Center
-                                    ) {
-                                        Text(
-                                            text = word.hebrew.take(revealedHebrewChars.coerceAtLeast(1)),
-                                            fontSize = 38.sp,
-                                            fontWeight = FontWeight.ExtraBold,
-                                            color = Color.White,
-                                            textAlign = TextAlign.Center
-                                        )
-                                        Spacer(modifier = Modifier.height(14.dp))
-                                        Text(
-                                            text = word.english,
-                                            fontSize = 19.sp,
-                                            color = PurpleNeon
-                                        )
-                                        Spacer(modifier = Modifier.height(18.dp))
-                                        OutlinedButton(
-                                            onClick = { speakWord(word.english) },
-                                            border = androidx.compose.foundation.BorderStroke(1.dp, TealNeon)
-                                        ) {
-                                            Icon(Icons.Default.VolumeUp, contentDescription = null, tint = TealNeon)
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Text("השמע הגייה באנגלית", color = TealNeon)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // --- שכבת פיצוץ קונפטי ניאון בחגיגת מילה שנלמדה ---
-                    if (showConfetti) {
-                        Canvas(modifier = Modifier.fillMaxSize()) {
-                            val center = Offset(size.width / 2f, size.height / 2f)
-                            val p = confettiProgress.value
-                            confettiParticles.forEach { particle ->
-                                val distance = particle.speed * p
-                                val gravityY = 260f * p * p
-                                val x = center.x + cos(particle.angle) * distance
-                                val y = center.y + sin(particle.angle) * distance + gravityY
-                                drawCircle(
-                                    color = particle.color.copy(alpha = (1f - p).coerceIn(0f, 1f)),
-                                    radius = particle.radius * (1f - p * 0.4f),
-                                    center = Offset(x, y)
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
-            // --- חלק תחתון: כפתורי פעולה אלסטיים וכפתור מעבר חכם ---
-            Column(
-                modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
-                    horizontalArrangement = Arrangement.SpaceEvenly,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    BouncyActionIcon(
-                        label = "נלמד",
-                        icon = Icons.Default.Check,
-                        activeColor = CheckNeon,
-                        isActive = currentWord?.isLearned == true,
-                        onClick = {
-                            val newState = !(currentWord?.isLearned ?: false)
-                            markCurrentWord(learned = newState)
-                            if (newState) advanceToNextWord(exitDirection = 1f)
-                        }
-                    )
-
-                    BouncyActionIcon(
-                        label = "הקרא שוב",
-                        icon = Icons.Default.RecordVoiceOver,
-                        activeColor = TealNeon,
-                        isActive = isSpeaking,
-                        onClick = { currentWord?.let { speakWord(it.english) } }
-                    )
-
-                    BouncyActionIcon(
-                        label = "קשה",
-                        icon = Icons.Default.Star,
-                        activeColor = StarGold,
-                        isActive = currentWord?.isHard == true,
-                        onClick = {
-                            val newState = !(currentWord?.isHard ?: false)
-                            markCurrentWord(hard = newState)
-                        }
-                    )
-                }
-
-                // כפתור המילה הבאה עם גרדיאנט חי
-                Button(
-                    onClick = {
-                        markCurrentWord()
-                        advanceToNextWord(exitDirection = 0f)
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth(0.86f)
-                        .height(58.dp)
-                        .scale(breathingScale)
-                        .clip(RoundedCornerShape(30.dp))
-                        .border(2.dp, TealNeon, RoundedCornerShape(30.dp)),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent),
-                    contentPadding = PaddingValues()
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(
-                                Brush.horizontalGradient(
-                                    colors = listOf(TealDark, CardDark, TealDark)
-                                )
-                            ),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "המילה הבאה בתור החכם",
-                            fontSize = 19.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White
-                        )
                     }
                 }
             }
@@ -896,32 +939,88 @@ fun FlashcardScreen(words: List<WordCard>, repository: WordRepository) {
     }
 }
 
-// קומפוננטת גל אות-אחר-אות עבור המילה באנגלית
+// אייקון רמקול וקטורי קליל (0KB - חוסך את הצורך בספריית material-icons-extended הכבדה)
 @Composable
-fun AnimatedWaveWord(word: String, phase: Float, color: Color) {
-    AnimatedContent(
-        targetState = word,
-        transitionSpec = {
-            (fadeIn(tween(240)) + scaleIn(initialScale = 0.8f))
-                .togetherWith(fadeOut(tween(150)) + scaleOut(targetScale = 1.15f))
-        },
-        label = "waveWordAnim"
-    ) { targetWord ->
-        Row(
-            horizontalArrangement = Arrangement.Center,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            targetWord.forEachIndexed { index, char ->
-                val waveOffsetY = sin(phase + index * 0.55f) * 5f
-                Text(
-                    text = char.toString(),
-                    fontSize = 40.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                    color = color,
-                    modifier = Modifier.offset(y = waveOffsetY.dp)
-                )
-            }
+fun SpeakerVectorIcon(tint: Color, isMuted: Boolean, modifier: Modifier = Modifier) {
+    Canvas(modifier = modifier) {
+        val w = size.width
+        val h = size.height
+        val speakerPath = Path().apply {
+            moveTo(w * 0.12f, h * 0.36f)
+            lineTo(w * 0.32f, h * 0.36f)
+            lineTo(w * 0.56f, h * 0.16f)
+            lineTo(w * 0.56f, h * 0.84f)
+            lineTo(w * 0.32f, h * 0.64f)
+            lineTo(w * 0.12f, h * 0.64f)
+            close()
         }
+        drawPath(speakerPath, color = tint)
+
+        if (isMuted) {
+            drawLine(
+                color = tint,
+                start = Offset(w * 0.66f, h * 0.34f),
+                end = Offset(w * 0.92f, h * 0.66f),
+                strokeWidth = w * 0.09f,
+                cap = StrokeCap.Round
+            )
+            drawLine(
+                color = tint,
+                start = Offset(w * 0.92f, h * 0.34f),
+                end = Offset(w * 0.66f, h * 0.66f),
+                strokeWidth = w * 0.09f,
+                cap = StrokeCap.Round
+            )
+        } else {
+            drawArc(
+                color = tint,
+                startAngle = -45f,
+                sweepAngle = 90f,
+                useCenter = false,
+                topLeft = Offset(w * 0.45f, h * 0.28f),
+                size = androidx.compose.ui.geometry.Size(w * 0.32f, h * 0.44f),
+                style = Stroke(width = w * 0.08f, cap = StrokeCap.Round)
+            )
+            drawArc(
+                color = tint,
+                startAngle = -50f,
+                sweepAngle = 100f,
+                useCenter = false,
+                topLeft = Offset(w * 0.52f, h * 0.14f),
+                size = androidx.compose.ui.geometry.Size(w * 0.42f, h * 0.72f),
+                style = Stroke(width = w * 0.08f, cap = StrokeCap.Round)
+            )
+        }
+    }
+}
+
+// אייקון גביע וקטורי קליל למסך סיום קטגוריה
+@Composable
+fun TrophyVectorIcon(tint: Color, modifier: Modifier = Modifier) {
+    Canvas(modifier = modifier) {
+        val w = size.width
+        val h = size.height
+        val cupPath = Path().apply {
+            moveTo(w * 0.25f, h * 0.15f)
+            lineTo(w * 0.75f, h * 0.15f)
+            lineTo(w * 0.65f, h * 0.55f)
+            lineTo(w * 0.35f, h * 0.55f)
+            close()
+        }
+        drawPath(cupPath, color = tint, style = Stroke(width = w * 0.06f, join = StrokeJoin.Round))
+        drawLine(
+            color = tint,
+            start = Offset(w * 0.5f, h * 0.55f),
+            end = Offset(w * 0.5f, h * 0.8f),
+            strokeWidth = w * 0.08f
+        )
+        drawLine(
+            color = tint,
+            start = Offset(w * 0.3f, h * 0.82f),
+            end = Offset(w * 0.7f, h * 0.82f),
+            strokeWidth = w * 0.08f,
+            cap = StrokeCap.Round
+        )
     }
 }
 
@@ -957,10 +1056,10 @@ fun AnimatedCounterBadge(title: String, count: Int, color: Color) {
 @Composable
 fun BouncyActionIcon(
     label: String,
-    icon: ImageVector,
     activeColor: Color,
     isActive: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    iconContent: @Composable (Color) -> Unit
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
@@ -993,12 +1092,7 @@ fun BouncyActionIcon(
                 ),
             contentAlignment = Alignment.Center
         ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = label,
-                tint = if (isActive) activeColor else Color.LightGray,
-                modifier = Modifier.size(26.dp)
-            )
+            iconContent(if (isActive) activeColor else Color.LightGray)
         }
         Spacer(modifier = Modifier.height(5.dp))
         Text(
