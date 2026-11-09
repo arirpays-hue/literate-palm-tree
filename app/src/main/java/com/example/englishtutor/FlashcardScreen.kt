@@ -44,6 +44,7 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -1087,7 +1088,7 @@ fun AnimatedCounterBadge(title: String, count: Int, color: Color) {
                 fontSize = 15.sp,
                 fontWeight = FontWeight.ExtraBold,
                 color = color,
-                fontFeatureSettings = "tnum",
+                style = TextStyle(fontFeatureSettings = "tnum"),
                 modifier = Modifier.widthIn(min = 22.dp),
                 textAlign = TextAlign.Center,
             )
