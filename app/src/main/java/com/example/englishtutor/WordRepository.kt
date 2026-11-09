@@ -63,6 +63,10 @@ class WordRepository(
                 .bufferedReader()
                 .use { it.readText() }
             val jsonArray = JSONArray(jsonString)
+            if (jsonArray.length() == 0) {
+                loadError = "קובץ המילים ריק — לא נמצאו מילים לטעינה."
+                return emptyList()
+            }
             buildList {
                 for (i in 0 until jsonArray.length()) {
                     val item = jsonArray.getJSONObject(i)
