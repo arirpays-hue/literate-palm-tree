@@ -23,7 +23,6 @@ android {
         }
         create("githubDebug") {
             initWith(getByName("debug"))
-            signingConfig = signingConfigs.getByName("debug")
             isDebuggable = false
             isMinifyEnabled = true
             isShrinkResources = true
