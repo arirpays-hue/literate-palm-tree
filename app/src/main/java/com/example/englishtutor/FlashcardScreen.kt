@@ -87,6 +87,7 @@ fun FlashcardScreen(words: List<WordCard>, repository: WordRepository) {
     val haptic = LocalHapticFeedback.current
     val density = LocalDensity.current
     val shakePx = with(density) { 12.dp.toPx() }
+    val densityFloat = density.density
 
     var allWords by remember(words) { mutableStateOf(words) }
     var selectedFilter by remember { mutableStateOf(StudyFilter.SMART) }
@@ -113,7 +114,6 @@ fun FlashcardScreen(words: List<WordCard>, repository: WordRepository) {
                 Log.e(TTS_TAG, "Init failed: $status")
                 return@TextToSpeech
             }
-            // דוחה את הקונפיגורציה ל-main thread כדי ש-engine יהיה מוקצה
             mainHandler.post {
                 if (disposed) return@post
                 val e = engine ?: return@post
@@ -167,7 +167,6 @@ fun FlashcardScreen(words: List<WordCard>, repository: WordRepository) {
         }
     }
 
-    // הקראה אוטומטית מסונכרנת
     LaunchedEffect(currentWord?.english, ttsReady, autoSpeak) {
         val target = currentWord?.english ?: return@LaunchedEffect
         if (!ttsReady || !autoSpeak || target.isBlank()) return@LaunchedEffect
@@ -378,7 +377,6 @@ fun FlashcardScreen(words: List<WordCard>, repository: WordRepository) {
                 dragOffsetX.animateTo(exitDirection * 950f, tween(200))
             }
 
-            // החלפת המילה *לפני* החזרת הכרטיס למרכז - מונע הבהוב
             currentWord = repository.pickNextSmartWord(
                 allWords = allWords,
                 filter = selectedFilter,
@@ -642,7 +640,7 @@ fun FlashcardScreen(words: List<WordCard>, repository: WordRepository) {
                                         rotationY = flipRotation
                                         rotationZ = (dragOffsetX.value / 25f).coerceIn(-18f, 18f) + cardTiltWobble
                                         rotationX = (-dragOffsetY.value / 35f).coerceIn(-10f, 10f)
-                                        cameraDistance = 16f * density
+                                        cameraDistance = 16f * densityFloat
                                     }
                                     .pointerInput(Unit) {
                                         detectDragGestures(
