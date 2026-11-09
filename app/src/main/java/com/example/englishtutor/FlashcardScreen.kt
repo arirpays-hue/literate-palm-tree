@@ -38,7 +38,6 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalLayoutDirection
@@ -81,7 +80,6 @@ data class ConfettiParticle(
 
 @Composable
 fun FlashcardScreen(words: List<WordCard>, repository: WordRepository) {
-    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
     val haptic = LocalHapticFeedback.current
@@ -100,15 +98,14 @@ fun FlashcardScreen(words: List<WordCard>, repository: WordRepository) {
     var isSpeaking by remember { mutableStateOf(false) }
     var comboStreak by remember { mutableIntStateOf(0) }
 
-    // --- מנוע הקראה קולית עם טיפול נכון ב-race של init ---
     var ttsReady by remember { mutableStateOf(false) }
     val ttsRef = remember { mutableStateOf<TextToSpeech?>(null) }
 
-    DisposableEffect(context) {
+    DisposableEffect(Unit) {
         var engine: TextToSpeech? = null
         var disposed = false
 
-        engine = TextToSpeech(context) { status ->
+        engine = TextToSpeech(androidx.compose.ui.platform.LocalContext.current) { status ->
             if (disposed) return@TextToSpeech
             if (status != TextToSpeech.SUCCESS) {
                 Log.e(TTS_TAG, "Init failed: $status")
@@ -176,7 +173,6 @@ fun FlashcardScreen(words: List<WordCard>, repository: WordRepository) {
         if (currentWord?.english == target) speakWord(target)
     }
 
-    // --- אנימציות ---
     val dragOffsetX = remember { Animatable(0f) }
     val dragOffsetY = remember { Animatable(0f) }
     val cardEnterScale = remember { Animatable(1f) }
@@ -415,7 +411,6 @@ fun FlashcardScreen(words: List<WordCard>, repository: WordRepository) {
                     )
                 )
         ) {
-            // --- רקע: כדורי אור מרחפים ---
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val w = size.width
                 val h = size.height
@@ -451,7 +446,6 @@ fun FlashcardScreen(words: List<WordCard>, repository: WordRepository) {
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.SpaceBetween,
             ) {
-                // --- עליון ---
                 Column(modifier = Modifier.fillMaxWidth().padding(top = 10.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -587,7 +581,6 @@ fun FlashcardScreen(words: List<WordCard>, repository: WordRepository) {
                     }
                 }
 
-                // --- אמצע: כרטיסייה ---
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -702,7 +695,6 @@ fun FlashcardScreen(words: List<WordCard>, repository: WordRepository) {
                                         contentAlignment = Alignment.Center,
                                     ) {
                                         if (flipRotation <= 90f) {
-                                            // צד קדמי
                                             Column(
                                                 modifier = Modifier.fillMaxSize(),
                                                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -818,7 +810,6 @@ fun FlashcardScreen(words: List<WordCard>, repository: WordRepository) {
                                                 )
                                             }
                                         } else {
-                                            // צד אחורי
                                             Column(
                                                 modifier = Modifier
                                                     .fillMaxSize()
@@ -884,7 +875,6 @@ fun FlashcardScreen(words: List<WordCard>, repository: WordRepository) {
                     }
                 }
 
-                // --- תחתון ---
                 Column(
                     modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
