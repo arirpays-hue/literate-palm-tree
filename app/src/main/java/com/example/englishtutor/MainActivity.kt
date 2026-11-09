@@ -7,17 +7,13 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.*
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -45,9 +41,10 @@ class MainActivity : ComponentActivity() {
                     var wordList by remember { mutableStateOf(repository.loadWords()) }
                     var loadError by remember { mutableStateOf(repository.loadError) }
 
-                    if (loadError != null) {
+                    val currentError = loadError
+                    if (currentError != null) {
                         ErrorScreen(
-                            message = loadError!!,
+                            message = currentError,
                             onRetry = {
                                 wordList = repository.loadWords()
                                 loadError = repository.loadError
@@ -77,20 +74,18 @@ private val AppColorScheme = darkColorScheme(
     onSurfaceVariant = Color.LightGray,
 )
 
-@androidx.compose.runtime.Composable
+@Composable
 private fun ErrorScreen(message: String, onRetry: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(DarkBg)
+            .windowInsetsPadding(WindowInsets.systemBars)
             .padding(24.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text(
-            text = "⚠️",
-            fontSize = 48.sp,
-        )
+        Text(text = "⚠️", fontSize = 48.sp)
         Spacer(modifier = Modifier.height(12.dp))
         Text(
             text = message,
