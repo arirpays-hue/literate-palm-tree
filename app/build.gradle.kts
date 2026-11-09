@@ -13,14 +13,18 @@ android {
         targetSdk = 34
         versionCode = 2
         versionName = "2.0"
-
-        // שומר רק משאבי עברית ואנגלית כדי לחסוך מקום ב-APK
-        resourceConfigurations += listOf("en", "iw", "he")
+        resourceConfigurations += listOf("en", "he")
     }
 
     buildTypes {
         debug {
-            // הפעלת כיווץ קוד ומשאבים גם בגרסת ה-APK שנבנית בגיטהאב
+            isMinifyEnabled = false
+            isShrinkResources = false
+        }
+        create("githubDebug") {
+            initWith(getByName("debug"))
+            signingConfig = signingConfigs.getByName("debug")
+            isDebuggable = false
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
